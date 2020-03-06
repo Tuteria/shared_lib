@@ -200,7 +200,7 @@ class QuerySet(QuerySetMixin):
     def __init__(self, klass, pk="id"):
         self.klass = klass
         self.queryset = None
-        self.pk = pk
+        self.pk = self.klass.get_primary_key()
         self._using = "default"
 
     @cached_property
@@ -223,11 +223,12 @@ class QuerySet(QuerySetMixin):
         else:
             values = [self.klass.build_db_dict(x) for x in records]
         if not force_create:
-            if values[0].get("id"):
+            if values[0].get(self.pk):
+                # if values[0].get("id"):
                 sql = self.table.update()
         for i in values:
-            if i.get("id") in [0, None]:
-                i.pop("id")
+            if i.get(self.pk) in [0, None]:
+                i.pop(self.pk)
         # logging.info(sql)
         async with self.database.transaction():
             await self.database.execute_many(query=sql, values=values)
@@ -383,7 +384,8 @@ class QuerySet(QuerySetMixin):
             if klass_field:
                 if self.klass.is_related_field(klass_field[0]):
                     cls_instance = utils.get_field(klass_field[1])
-                    instance = await cls_instance.objects.get(id=value)
+                    query_by_id = {self.pk: value}
+                    instance = await cls_instance.objects.get(**query_by_id)
                     result[klass_field[0]] = instance
                 else:
                     result[klass_field[0]] = value
@@ -429,7 +431,7 @@ class QuerySet(QuerySetMixin):
         # missing_kwargs = self.klass.update_passed_values(new_kwargs)
         # new_kwargs = {**new_kwargs, **missing_kwargs}
         instance = self.klass(**new_kwargs)
-        await instance.save(using=self._using)
+        await instance.save(using=self._using, create=True)
         return instance
 
     async def update(self, **kwargs):
@@ -461,8 +463,10 @@ class QuerySet(QuerySetMixin):
 
     async def delete(self):
         expr = self.get_queryset().alias()
-        where_clause = self.table.c.id.in_(
-            sqlalchemy.select([self.table.c.id]).where(self.table.c.id == expr.c.id)
+        table_id = getattr(self.table.c, self.pk)
+        expr_id = getattr(expr.c, self.pk)
+        where_clause = table_id.in_(
+            sqlalchemy.select([table_id]).where(table_id == expr_id)
         )
         sql = sqlalchemy.sql.delete(self.table).where(where_clause)
         self._using = "default"

@@ -4,7 +4,20 @@ from datetime import datetime
 import sqlalchemy
 from pydantic import EmailStr, SecretStr, validator
 
-from orm import Base, CacheBase, fields
+from orm import Base, CacheBase, fields, BareBase
+
+
+class Bare(BareBase):
+    special_id: int
+    name: str
+
+    @classmethod
+    def get_primary_key(cls):
+        return "special_id"
+
+    class Config:
+        table_name = "special_table"
+        table_config = {"special_id": {"primary_key": True, "index": True}}
 
 
 class User(Base):
@@ -108,4 +121,7 @@ class ProfileCache(CacheBase):
 
 def init_tables(database, replica_database=None):
     metadata = orm.utils.init_tables(Base, database, replica_database=replica_database)
+    metadata = orm.utils.init_tables(
+        BareBase, database, replica_database=replica_database, metadata=metadata
+    )
     return metadata

@@ -229,5 +229,18 @@ async def test_different_db_usage(replica_database):
     await db.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_model_without_id_as_pk(database):
+    async with database:
+        await models.Bare.objects.delete()
+        assert await models.Bare.objects.count() == 0
+        record = await models.Bare.objects.create(special_id=22, name="Special")
+        assert await models.Bare.objects.count() == 1
+        assert record.special_id == 22
+        record = await models.Bare.objects.first()
+        assert record.special_id == 22
+        assert record.name == "Special"
+
+
 # @async_adapter
 # async def test_queryset_create():

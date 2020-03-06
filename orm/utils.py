@@ -3,9 +3,12 @@ import functools
 import sqlalchemy
 
 
-def init_tables(model: type, database, replica_database=None, redis_instance=None):
+def init_tables(
+    model: type, database, replica_database=None, redis_instance=None, metadata=None
+):
     tables = []
-    metadata = sqlalchemy.MetaData()
+    if not metadata:
+        metadata = sqlalchemy.MetaData()
     for subclass in model.__subclasses__():
         t = subclass.build_table(metadata)
         tables.append(t)

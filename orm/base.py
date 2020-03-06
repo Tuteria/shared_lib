@@ -83,7 +83,7 @@ def create_db_column(field: Field, **kwargs) -> sqlalchemy.Column:
 
 class ModelMetaClass(MetaModel):
     def __init__(self, name, bases, namespace, **kwargs):
-        # This will never be called because the return type of `__new__` is 
+        # This will never be called because the return type of `__new__` is
         super().__init__(name, bases, namespace, **kwargs)
         self.objects = queryset.QuerySet(self)
 
@@ -95,12 +95,29 @@ class ModelMetaClass(MetaModel):
     def c(self):
         return self.table.c
 
+    @property
+    def primary_key(self):
+        return self.get_primary_key()
 
-class Base(BaseModel, metaclass=ModelMetaClass):
-    id: int = 0
+
+class AbstractBase(BaseModel, metaclass=ModelMetaClass):
+    @property
+    def pk(self):
+        return getattr(self, self.__class__.get_primary_key())
+
+    @pk.setter
+    def pk(self, value):
+        setattr(self, self.__class__.get_primary_key(), value)
+
+    def update_pk(self, value):
+        setattr(self, self.__class__.get_primary_key(), value)
 
     def _is_related_field(self, field: str) -> bool:
         return self.__class__.is_related_field(field)
+
+    @classmethod
+    def get_primary_key(self):
+        return "id"
 
     @classmethod
     def is_json_field(cls, field: str) -> bool:
@@ -204,16 +221,18 @@ class Base(BaseModel, metaclass=ModelMetaClass):
             redis_conn = await self.__class__.redis_conn()
 
     async def delete(self):
-        await self.objects.filter(id=self.id).delete()
+        primary_key = getattr(self, self.__class__.primary_key)
+        await self.objects.filter(id=primary_key).delete()
         return None
 
     def build_db_save_params(self):
+        primary_key_r = self.__class__.primary_key
         values = self.dict()
         clean_values = {}
         for key, value in values.items():
             if self._is_related_field(key):
                 if value:
-                    clean_values[self._get_field_db_name(key)] = value["id"]
+                    clean_values[self._get_field_db_name(key)] = value[primary_key_r]
             else:
                 if type(value) == SecretStr:
                     clean_values[key] = value.get_secret_value()
@@ -254,20 +273,26 @@ class Base(BaseModel, metaclass=ModelMetaClass):
         return default_values
 
     @classmethod
-    async def save_model(cls, clean_values, _id=0, using="default", connection=None):
+    async def save_model(
+        cls, clean_values, _id=0, using="default", connection=None, create=False
+    ):
         table = cls.table
         obj = None
         if _id:
             # create class instance when no id exists
             obj = cls(**clean_values)
-        if not _id:
+        if not _id or create:
             sql = table.insert()
-            clean_values.pop("id")
+            if not _id:
+                # when model instance is to be created but pk should be auto generated
+                # has a default value of 0
+                clean_values.pop(cls.primary_key)
         else:
             sql = table.update()
         sql = sql.values(**clean_values)
-        if _id:
-            sql = sql.where(table.c.id == _id)
+        if _id and not create:
+            table_field = getattr(table.c, cls.primary_key)
+            sql = sql.where(table_field == _id)
         # task = asyncio.create_task()
         # import ipdb; ipdb.set_trace()
         tasks = [cls.databases[using].execute(query=sql)]
@@ -278,22 +303,23 @@ class Base(BaseModel, metaclass=ModelMetaClass):
             tasks.append(cls.objects.remove_cache(obj, connection=connection))
 
         result = await asyncio.gather(*tasks)
-
         return result[0]
 
-    async def save(self, using="default", connection=None):
+    async def save(self, using="default", connection=None, create=False):
         clean_values = self.build_db_save_params()
         with_default_values = self.__class__.update_passed_values(clean_values)
         try:
             result = await self.__class__.save_model(
                 {**clean_values, **with_default_values},
                 # clean_values,
-                _id=self.id,
+                _id=self.pk,
                 using=using,
                 connection=connection,
+                create=create,
             )
             if result:
-                self.id = result
+                self.update_pk(result)
+                # self.pk = result
             for key, value in with_default_values.items():
                 setattr(self, key, value)
         except asyncpg.exceptions.InterfaceError as e:
@@ -304,7 +330,7 @@ class Base(BaseModel, metaclass=ModelMetaClass):
 
     async def load(self):
         table = self.objects.table
-        record = await self.objects.filter(id=self.id).get()
+        record = await self.objects.filter(id=self.pk).get()
         self = record
 
     def as_dict(self):
@@ -330,7 +356,7 @@ class Base(BaseModel, metaclass=ModelMetaClass):
             cls.redis_conn = redis_instance
 
     def __eq__(self, value):
-        return self.id == value.id
+        return self.pk == value.pk
 
     @classmethod
     def build_db_dict(cls, instance):
@@ -376,6 +402,14 @@ class Base(BaseModel, metaclass=ModelMetaClass):
 
     async def in_write_cache(self, connection=None) -> bool:
         return await self.objects.in_write_cache(self, connection=connection)
+
+
+class Base(AbstractBase):
+    id: int = 0
+
+
+class BareBase(AbstractBase):
+    pass
 
 
 class CacheMetaClass(MetaModel):

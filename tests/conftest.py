@@ -6,7 +6,7 @@ import pytest
 import sqlalchemy
 from async_timeout import timeout as async_timeout
 
-from models import Base
+from models import Base, BareBase
 from orm import utils
 
 # DATABASE_URL = "sqlite:///test.db"
@@ -19,6 +19,9 @@ REDIS_HOST = "redis://localhost:6379"
 @pytest.fixture(scope="module")
 def metadata(database, replica_database):
     metadata = utils.init_tables(Base, database, replica_database)
+    metadata = utils.init_tables(
+        BareBase, database, replica_database, metadata=metadata
+    )
     return metadata
 
 
