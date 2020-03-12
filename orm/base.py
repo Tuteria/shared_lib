@@ -86,6 +86,7 @@ class ModelMetaClass(MetaModel):
         # This will never be called because the return type of `__new__` is
         super().__init__(name, bases, namespace, **kwargs)
         self.objects = queryset.QuerySet(self)
+        self._prefetched = False
 
     @property
     def table(self) -> sqlalchemy.Table:
@@ -101,6 +102,9 @@ class ModelMetaClass(MetaModel):
 
 
 class AbstractBase(BaseModel, metaclass=ModelMetaClass):
+    def was_prefetched(self):
+        return self.__class__._prefetched
+
     @property
     def pk(self):
         return getattr(self, self.__class__.get_primary_key())
@@ -118,6 +122,10 @@ class AbstractBase(BaseModel, metaclass=ModelMetaClass):
     @classmethod
     def get_primary_key(self):
         return "id"
+
+    @classmethod
+    def get_related_primary_key(self):
+        return self.get_primary_key()
 
     @classmethod
     def is_json_field(cls, field: str) -> bool:
@@ -240,6 +248,87 @@ class AbstractBase(BaseModel, metaclass=ModelMetaClass):
                     clean_values[key] = value
 
         return clean_values
+
+    @classmethod 
+    def from_row_sync(cls, row, select_related=[]):
+        """
+        Instantiate a model instance, given a database row.
+        """
+        item = {}
+
+        # Instantiate any child instances first.
+        for related in select_related:
+            if "__" in related:
+                first_part, remainder = related.split("__", 1)
+                model_cls = cls.get_related_field_class(first_part)
+                as_dict = model_cls.from_row_sync(row, select_related=[remainder])
+                key = first_part
+                # item[first_part] =
+            else:
+                model_cls = cls.get_related_field_class(related)
+                as_dict = model_cls.from_row_sync(row)
+                key = related
+            # convert to class instance immediately
+            item[key] = model_cls.construct(**as_dict)
+            cls._prefetched = True
+
+        # Pull out the regular column values.
+        for column in cls.table.columns:
+            if column.name not in item:
+                klass_field = cls.get_class_field_from_db_name(column.name)
+                if not cls.is_related_field(klass_field[0]):
+                    item[column.name] = row[column]
+                else:
+                    # inefficient way of loading related fields. useful for single records
+                    # without having to add a new api like encode/orm
+                    if klass_field[0] not in item: # only do this if not already done above
+                        cls_instance = get_field(klass_field[1])
+                        _key = cls_instance.get_related_primary_key()
+                        query_by_id = {_key: row[column]}
+                        item[klass_field[0]] = model_cls.construct(**query_by_id)
+                    # result = await cls_instance.objects.get(**query_by_id)
+                    # item[klass_field[0]] = result
+        return item
+
+    @classmethod
+    async def from_row(cls, row, select_related=[]):
+        """
+        Instantiate a model instance, given a database row.
+        """
+        item = {}
+
+        # Instantiate any child instances first.
+        for related in select_related:
+            if "__" in related:
+                first_part, remainder = related.split("__", 1)
+                model_cls = cls.get_related_field_class(first_part)
+                as_dict = await model_cls.from_row(row, select_related=[remainder])
+                key = first_part
+                # item[first_part] =
+            else:
+                model_cls = cls.get_related_field_class(related)
+                as_dict = await model_cls.from_row(row)
+                key = related
+            # convert to class instance immediately
+            item[key] = model_cls.construct(**as_dict)
+            cls._prefetched = True
+
+        # Pull out the regular column values.
+        for column in cls.table.columns:
+            if column.name not in item:
+                klass_field = cls.get_class_field_from_db_name(column.name)
+                if not cls.is_related_field(klass_field[0]):
+                    item[column.name] = row[column]
+                else:
+                    # inefficient way of loading related fields. useful for single records
+                    # without having to add a new api like encode/orm
+                    if klass_field[0] not in item: # only do this if not already done above
+                        cls_instance = get_field(klass_field[1])
+                        _key = cls_instance.get_related_primary_key()
+                        query_by_id = {_key: row[column]}
+                        result = await cls_instance.objects.get(**query_by_id)
+                        item[klass_field[0]] = result
+        return item
 
     @classmethod
     def update_passed_values(cls, clean_values):

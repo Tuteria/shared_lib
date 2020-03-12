@@ -197,11 +197,14 @@ class CacheQuerySet(QuerySetMixin):
 class QuerySet(QuerySetMixin):
     ESCAPE_CHARACTERS = ["%", "_"]
 
-    def __init__(self, klass, pk="id"):
+    def __init__(
+        self, klass, pk="id", using="default", queryset=None, select_related=None
+    ):
         self.klass = klass
-        self.queryset = None
+        self.queryset = queryset
         self.pk = self.klass.get_primary_key()
-        self._using = "default"
+        self._using = using
+        self._select_related = select_related or []
 
     @cached_property
     def metadata(self):
@@ -253,7 +256,6 @@ class QuerySet(QuerySetMixin):
 
         expr = sqlalchemy.sql.select(tables)
         expr = expr.select_from(select_from)
-
         if _filter_clauses:
             if len(_filter_clauses) == 1:
                 clause = _filter_clauses[0]
@@ -268,7 +270,8 @@ class QuerySet(QuerySetMixin):
 
     def filter(self, **kwargs) -> sqlalchemy.sql.selectable.Select:
         filter_clauses = []
-        select_related = []
+        # select_related = []
+        select_related = list(self._select_related)
 
         for key, value in kwargs.items():
             json_column = None
@@ -369,6 +372,23 @@ class QuerySet(QuerySetMixin):
         )
         return self
 
+    def select_related(self, related):
+        if not isinstance(related, (list, tuple)):
+            related = [related]
+
+        related = list(self._select_related) + related
+        self._select_related = related
+        with_filter = self.filter()
+        self.queryset = with_filter.queryset
+        return self.__class__(
+            klass=self.klass,
+            pk=self.pk,
+            using=self._using,
+            queryset=self.queryset,
+            select_related=related,
+            # limit_count=self.limit_count,
+        )
+
     async def get(self, **kwargs):
         params = [getattr(self.table.c, key) == value for key, value in kwargs.items()]
         sql = self.get_queryset().where(sqlalchemy.and_(*params))
@@ -379,27 +399,41 @@ class QuerySet(QuerySetMixin):
 
     async def as_dict(self, sqlalchemy_result):
         result = {}
-        for key, value in sqlalchemy_result.items():
-            klass_field = self.klass.get_class_field_from_db_name(key)
-            if klass_field:
-                if self.klass.is_related_field(klass_field[0]):
-                    cls_instance = utils.get_field(klass_field[1])
-                    query_by_id = {self.pk: value}
-                    instance = await cls_instance.objects.get(**query_by_id)
-                    result[klass_field[0]] = instance
-                else:
-                    result[klass_field[0]] = value
+        result = await self.klass.from_row(
+            sqlalchemy_result, select_related=self._select_related
+        )
         return result
+        # for key, value in sqlalchemy_result.items():
+        #     klass_field = self.klass.get_class_field_from_db_name(key)
+        #     if klass_field:
+        #         if self.klass.is_related_field(klass_field[0]):
+        #             cls_instance = utils.get_field(klass_field[1])
+        #             _key = (
+        #                 self.klass.get_related_primary_key()
+        #             )  # pk for the related column
+        #             query_by_id = {_key: value}
+        #             # query_by_id = {self.pk: value}
+        #             instance = await cls_instance.objects.get(**query_by_id)
+        #             result[klass_field[0]] = instance
+        #         else:
+        #             result[klass_field[0]] = value
+        # return result
 
     async def as_klass(self, sqlalchemy_result):
         _dict = await self.as_dict(sqlalchemy_result)
         return self.klass(**_dict)
 
     async def all(self, where_clause=None, custom=False):
-        queryset = where_clause if custom else self.get_queryset()
+        queryset = where_clause or self.get_queryset()
         result = await self.database.fetch_all(queryset)
         self.queryset = None
         return await asyncio.gather(*[self.as_klass(o) for o in result])
+
+    async def iterate(self, where_clause=None, custom=False):
+        queryset = where_clause if custom else self.get_queryset()
+        async for row in self.database.iterate(query=queryset):
+            result = self.klass.from_row_sync(row, select_related=self._select_related)
+            yield self.klass(**result)
 
     async def count(self):
         query = (

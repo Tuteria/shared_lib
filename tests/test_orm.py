@@ -242,5 +242,47 @@ async def test_model_without_id_as_pk(database):
         assert record.name == "Special"
 
 
+@pytest.mark.asyncio
+async def test_select_related(database):
+    user = models.User(full_name="Abiola", email="j@o.com")
+    async with user.database:
+        await clean_db()
+        await user.save()
+        await models.Profile.objects.bulk_create_or_insert(
+            [
+                models.Profile(user=user, addresses={"name": "Eleja 2"}),
+                models.Profile(user=user, addresses={"name": "Sunday 2"}),
+                models.Profile(user=user, addresses={"name": "Sunday"}),
+            ]
+        )
+        records2 = await models.Profile.objects.all()
+        assert not records2[0].was_prefetched()
+        assert records2[0].user.full_name == "Abiola"
+        records = await models.Profile.objects.select_related("user").all()
+        assert records[0].was_prefetched()
+        assert records[0].user.full_name == "Abiola"
+
+
 # @async_adapter
 # async def test_queryset_create():
+@pytest.mark.asyncio
+async def test_iterate_db_records(database):
+    user = models.User(full_name="Abiola", email="j@o.com")
+    async with user.database:
+        await clean_db()
+        await user.save()
+        await models.Profile.objects.bulk_create_or_insert(
+            [
+                models.Profile(user=user, addresses={"name": "Eleja 2"}),
+                models.Profile(user=user, addresses={"name": "Sunday 2"}),
+                models.Profile(user=user, addresses={"name": "Sunday"}),
+            ]
+        )
+        results = []
+        async for record in models.Profile.objects.select_related('user').iterate():
+            results.append(record)
+
+        assert len(results) == 3
+        assert results[0].user == user
+        assert results[0].addresses == {"name": "Eleja 2"}
+

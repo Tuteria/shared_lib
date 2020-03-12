@@ -40,6 +40,14 @@ class User(Base):
             "modified": {"onupdate": datetime.now},
         }
 
+    @validator("full_name", pre=True, always=True)
+    def set_full_name(cls, v):
+        return v or ""
+
+    @validator("email", pre=True, always=True)
+    def set_email(cls,v):
+        return v or ""
+
 
 class Skill(Base):
     name: str
